@@ -3,18 +3,6 @@
 #include "user/user.h"
 #include "kernel/fs.h"
 
-
-/*eg: filename=a/b/haha.txt => fmt_filename=haha.txt*/
-char *fmt_name(char *filename){
-	static char buf[DIRSIZ+1];
-	char *p;
-	
-	for(p=filename+strlen(filename); p >= filename && *p != '/'; p--);
-	p++;
-	memmove(buf, p, strlen(p)+1);
-	return buf;
-}
-
 void find(char *dirName, char *fileName)
 {
 	int fd;
@@ -32,32 +20,51 @@ void find(char *dirName, char *fileName)
 		close(fd);
 		return;
 	}
-	
-	switch(st.type){
-		case T_FILE:
-			if (strcmp(fmt_name(dirName), fileName) == 0){
-				printf("%s\n",fileName);	
-			}
-		case T_DIR:
-			// dirname + \ + filename + '\0'
-			if (strlen(dirName) + 1 + DIRSIZ + 1 > sizeof(buf)) {
-				printf("find: path too long\n");
-				break;	
-			}
-			strcpy(buf, dirName);
-			p = buf + strlen(buf);
-			*p = '/';
-			p ++;
-			while(read(fd, &de, sizeof(de)) == sizeof(de)) {
-				if (de.inum == 0 || !strcmp(de.name, ".") || !strcmp(de.name, ".."))
-					continue;
-				memmove(p, de.name, strlen(de.name));
-				p[strlen(de.name)] = 0;
-				find(buf, fileName);
-			}
-			break;
+    
+	if (st.type != T_DIR)
+	{
+		fprintf(2, "find: %s is not a directory\n", dirName);
+		close(fd);
+		return;
 	}
-	close(fd);
+	
+	if (strlen(dirName) + 1 + DIRSIZ + 1 > sizeof buf)
+	{
+		fprintf(2, "find: directory too long\n");
+		close(fd);
+		return;
+	}	
+
+	strcpy(buf, dirName);
+	p = buf + strlen(buf);
+	*p = '/';
+	p ++;
+	
+	while(read(fd, &de, sizeof(de)) == sizeof(de))
+	{
+		if (de.inum == 0)
+			continue;
+		if (!strcmp(de.name, ".") || !strcmp(de.name, ".."))
+			continue;
+		
+		memmove(p, de.name, DIRSIZ);
+		p[DIRSIZ] = 0;
+		if (stat(buf, &st) < 0)
+		{
+			fprintf(2, "find: cannnot stat %s\n", buf);
+			continue;
+		}
+		
+		if (st.type == T_DIR)
+		{
+			find(buf, fileName);
+		}
+		else if (st.type == T_FILE && !strcmp(de.name, fileName))
+		{
+			printf("%s\n", buf);
+		}
+	}
+
 }
 
 int main(int argc, char *argv[])
