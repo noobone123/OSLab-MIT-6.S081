@@ -34,14 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
-  kvminithart();
+  // kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -121,6 +121,20 @@ found:
     return 0;
   }
 
+  // An empty user kernel page table.
+  p->kernelpagetable = u_kpt_init();
+  if(p->kernelpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  char *pa = kalloc();
+  if (pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p-proc));
+  uvmmap(p->kernelpagetable, va, (uint64)pa, PGSIZE, PTE_R|PTE_W);
+  p->kstack = va;
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -128,6 +142,25 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+}
+
+void
+proc_freekpt(pagetable_t pagetable)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)){
+      pagetable[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0)
+      {
+        uint64 child = PTE2PA(pte);
+        proc_freekpt((pagetable_t)child);
+      }
+    } else if(pte & PTE_V){
+      panic("proc free kpt: leaf");
+    }
+  }
+  kfree((void*)pagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -139,8 +172,24 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  // 删除 kernel stack
+  if (p->kstack)
+  {
+    pte_t *pte = walk(p->kernelpagetable, p->kstack, 0);
+    if (pte == 0)
+      panic("freeproc: kstack");
+    kfree((void*)PTE2PA(*pte));
+  }
+  p->kstack = 0;
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  
+  // 删除 kernel page table
+  if (p->kernelpagetable)
+    proc_freekpt(p->kernelpagetable);
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,7 +522,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 有进程时切换到用户的内核页表
+        w_satp(MAKE_SATP(p->kernelpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
+
+        // 进程运行完毕之后，切换回内核页表
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

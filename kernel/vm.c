@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -54,6 +56,22 @@ kvminithart()
 {
   w_satp(MAKE_SATP(kernel_pagetable));
   sfence_vma();
+}
+
+pagetable_t u_kpt_init()
+{
+  pagetable_t u_kpt;
+  u_kpt = uvmcreate();
+  if (u_kpt == 0)
+    return 0;
+  uvmmap(u_kpt, UART0, UART0, PGSIZE, PTE_R|PTE_W);
+  uvmmap(u_kpt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R|PTE_W);
+  uvmmap(u_kpt, CLINT, CLINT, 0x10000, PTE_R|PTE_W);
+  uvmmap(u_kpt, PLIC, PLIC, 0x400000, PTE_R|PTE_W);
+  uvmmap(u_kpt, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R|PTE_X);
+  uvmmap(u_kpt, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R|PTE_W);
+  uvmmap(u_kpt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R|PTE_X);
+  return u_kpt;
 }
 
 // Return the address of the PTE in page table pagetable
@@ -132,7 +150,7 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kernelpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -166,6 +184,13 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   }
   return 0;
 }
+
+void uvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("uvmmap");
+}
+
 
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
